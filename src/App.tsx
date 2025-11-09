@@ -1,61 +1,104 @@
 import { useState } from 'react';
-import { useRouteSearch } from './hooks/useRouteSearch';
-import SearchForm from './components/SearchForm';
-import RouteResults from './components/RouteResults';
-import RouteDetails from './components/RouteDetails';
-import Map from './components/Map';
-import { TravelRoute } from './services/ztmApi';
+import { SearchPanel } from './components/SearchPanel';
+import { RouteList } from './components/RouteList';
+import { Map } from './components/Map';
+import { FavoritesPanel } from './components/FavoritesPanel';
+import { routingService } from './services/routingService';
+import { Route } from './types/route';
 import { Navigation } from 'lucide-react';
 
 function App() {
-  const { routes, loading, error, fromLocation, toLocation, searchByAddress } = useRouteSearch();
-  const [selectedRoute, setSelectedRoute] = useState<TravelRoute | null>(null);
+  const [routes, setRoutes] = useState<Route[]>([]);
+  const [selectedRoute, setSelectedRoute] = useState<Route | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSearch = async (
+    origin: { lat: number; lng: number; address: string },
+    destination: { lat: number; lng: number; address: string }
+  ) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const results = await routingService.searchRoutes({
+        origin,
+        destination
+      });
+      setRoutes(results);
+      if (results.length > 0) {
+        setSelectedRoute(results[0]);
+      }
+    } catch (err) {
+      setError('Błąd podczas wyszukiwania tras. Spróbuj ponownie.');
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFavoriteSelect = async (origin: string, destination: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const originResults = await routingService.geocode(origin);
+      const destResults = await routingService.geocode(destination);
+
+      if (originResults.length > 0 && destResults.length > 0) {
+        const results = await routingService.searchRoutes({
+          origin: originResults[0],
+          destination: destResults[0]
+        });
+        setRoutes(results);
+        if (results.length > 0) {
+          setSelectedRoute(results[0]);
+        }
+      }
+    } catch (err) {
+      setError('Błąd podczas wyszukiwania tras. Spróbuj ponownie.');
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-gray-100">
       <header className="bg-white shadow-sm border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+        <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center gap-3">
-            <div className="bg-blue-600 p-2 rounded-lg">
-              <Navigation className="w-6 h-6 text-white" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold text-gray-900">TransitPL</h1>
-              <p className="text-sm text-gray-600">Planuj podróże po całej Polsce</p>
-            </div>
+            <Navigation className="w-8 h-8 text-blue-600" />
+            <h1 className="text-2xl font-bold text-gray-900">TrasaPolska</h1>
+            <p className="text-sm text-gray-600 ml-2">Znajdź swoją trasę w całej Polsce</p>
           </div>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="max-w-7xl mx-auto px-4 py-6">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-1 space-y-6">
-            <SearchForm onSearch={searchByAddress} loading={loading} />
+            <SearchPanel onSearch={handleSearch} loading={loading} />
+            <FavoritesPanel onSelectFavorite={handleFavoriteSelect} />
+          </div>
+
+          <div className="lg:col-span-2 space-y-6">
+            <div className="bg-white rounded-lg shadow-lg overflow-hidden h-96">
+              <Map routes={routes} selectedRoute={selectedRoute} />
+            </div>
 
             {error && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                <p className="text-red-800 text-sm">{error}</p>
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
+                {error}
               </div>
             )}
 
-            <RouteResults routes={routes} onSelectRoute={setSelectedRoute} />
-          </div>
-
-          <div className="lg:col-span-2">
-            <div className="bg-white rounded-2xl shadow-lg overflow-hidden h-[600px]">
-              <Map
-                routes={selectedRoute ? selectedRoute.segments : []}
-                fromLocation={fromLocation || undefined}
-                toLocation={toLocation || undefined}
-              />
-            </div>
+            <RouteList
+              routes={routes}
+              onSelectRoute={setSelectedRoute}
+              selectedRoute={selectedRoute}
+            />
           </div>
         </div>
-      </main>
-
-      {selectedRoute && (
-        <RouteDetails route={selectedRoute} onClose={() => setSelectedRoute(null)} />
-      )}
+      </div>
     </div>
   );
 }
