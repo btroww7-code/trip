@@ -37,6 +37,7 @@ interface Route {
   arrivalTime: string;
   price?: number;
   currency?: string;
+  transfers: number;
 }
 
 Deno.serve(async (req: Request) => {
@@ -123,7 +124,8 @@ async function fetchSuggestions(query: string): Promise<Location[]> {
     );
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      console.error(`Suggestions HTTP error: ${response.status}`);
+      return [];
     }
 
     const data = await response.json();
@@ -167,7 +169,8 @@ async function searchRoutes(params: SearchParams): Promise<Route[]> {
     );
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      console.error(`Search HTTP error: ${response.status}`);
+      return [];
     }
 
     const html = await response.text();
@@ -176,7 +179,7 @@ async function searchRoutes(params: SearchParams): Promise<Route[]> {
     return routes;
   } catch (error) {
     console.error("Error searching routes:", error);
-    throw error;
+    return [];
   }
 }
 
@@ -184,31 +187,36 @@ function parseRoutesFromHTML(html: string): Route[] {
   const routes: Route[] = [];
 
   try {
-    const connectionMatches = html.matchAll(
-      /<div[^>]*class="[^"]*connection-item[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/gi
+    const tableRows = html.matchAll(
+      /<tr[^>]*class="[^"]*dataRow[^"]*"[^>]*>([\s\S]*?)<\/tr>/gi
     );
 
     let routeId = 0;
-    for (const match of connectionMatches) {
-      const connectionHtml = match[1];
+    for (const rowMatch of tableRows) {
+      const row = rowMatch[1];
       
-      const departureMatch = connectionHtml.match(/godzina\s+wyjazdu[^>]*>\s*<[^>]+>([^<]+)</);
-      const arrivalMatch = connectionHtml.match(/godzina\s+przyjazdu[^>]*>\s*<[^>]+>([^<]+)</);
-      const fromMatch = connectionHtml.match(/miejsce\s+wyjazdu[^>]*>\s*<[^>]+>([^<]+)</);
-      const toMatch = connectionHtml.match(/miejsce\s+przyjazdu[^>]*>\s*<[^>]+>([^<]+)</);
-      const carrierMatch = connectionHtml.match(/przewoźnik[^>]*>\s*<[^>]+>([^<]+)</);
-      const lineMatch = connectionHtml.match(/linia[^>]*>\s*<[^>]+>([^<]+)</);
-      const priceMatch = connectionHtml.match(/cena[^>]*>\s*<[^>]+>([\d,]+)/);
-
-      if (departureMatch && arrivalMatch && fromMatch && toMatch) {
-        const departureTime = departureMatch[1].trim();
-        const arrivalTime = arrivalMatch[1].trim();
-        const from = fromMatch[1].trim();
-        const to = toMatch[1].trim();
-        const carrier = carrierMatch ? carrierMatch[1].trim() : "";
+      const timeMatches = row.matchAll(/<td[^>]*>(\d{2}:\d{2})<\/td>/g);
+      const times = Array.from(timeMatches).map(m => m[1]);
+      
+      if (times.length >= 2) {
+        const departureTime = times[0];
+        const arrivalTime = times[1];
+        
+        const stationMatches = row.matchAll(/<td[^>]*>\s*([^<]+?)\s*<\/td>/g);
+        const stations = Array.from(stationMatches)
+          .map(m => m[1].trim())
+          .filter(s => s && s.length > 2 && !s.match(/^\d{2}:\d{2}$/));
+        
+        const carrierMatch = row.match(/<td[^>]*class="[^"]*carrier[^"]*"[^>]*>([^<]+)<\/td>/);
+        const lineMatch = row.match(/<td[^>]*class="[^"]*line[^"]*"[^>]*>([^<]+)<\/td>/);
+        const priceMatch = row.match(/<td[^>]*class="[^"]*price[^"]*"[^>]*>([\d,]+)/);
+        
+        const from = stations[0] || "Start";
+        const to = stations[1] || "Koniec";
+        const carrier = carrierMatch ? carrierMatch[1].trim() : "PKS";
         const line = lineMatch ? lineMatch[1].trim() : undefined;
         const price = priceMatch ? parseFloat(priceMatch[1].replace(",", ".")) : undefined;
-
+        
         const duration = calculateDuration(departureTime, arrivalTime);
 
         const segment: RouteSegment = {
@@ -223,46 +231,51 @@ function parseRoutesFromHTML(html: string): Route[] {
         };
 
         routes.push({
-          id: `route-${routeId++}`,
+          id: `epodroznik-${routeId++}`,
           segments: [segment],
           totalDuration: duration,
           departureTime,
           arrivalTime,
           price,
           currency: price ? "PLN" : undefined,
+          transfers: 0,
         });
       }
     }
 
     if (routes.length === 0) {
       const simpleMatches = html.matchAll(
-        /(\d{2}:\d{2})[^<]*<[^>]+>([^<]+)<[\s\S]{0,500}?(\d{2}:\d{2})/gi
+        /(\d{2}:\d{2})[\s\S]{0,200}?(\d{2}:\d{2})/gi
       );
 
+      let fallbackId = 0;
       for (const match of simpleMatches) {
-        if (routes.length >= 10) break;
+        if (routes.length >= 5) break;
         
         const departureTime = match[1];
-        const arrivalTime = match[3];
+        const arrivalTime = match[2];
         const duration = calculateDuration(departureTime, arrivalTime);
-
-        routes.push({
-          id: `route-${routeId++}`,
-          segments: [
-            {
-              type: "bus",
-              from: "Początek",
-              to: "Koniec",
-              departure: departureTime,
-              arrival: arrivalTime,
-              duration,
-              carrier: "PKS",
-            },
-          ],
-          totalDuration: duration,
-          departureTime,
-          arrivalTime,
-        });
+        
+        if (duration > 0 && duration < 86400) {
+          routes.push({
+            id: `epodroznik-fallback-${fallbackId++}`,
+            segments: [
+              {
+                type: "bus",
+                from: "Start",
+                to: "Koniec",
+                departure: departureTime,
+                arrival: arrivalTime,
+                duration,
+                carrier: "PKS",
+              },
+            ],
+            totalDuration: duration,
+            departureTime,
+            arrivalTime,
+            transfers: 0,
+          });
+        }
       }
     }
   } catch (error) {
